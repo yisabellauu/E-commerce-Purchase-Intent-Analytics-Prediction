@@ -19,7 +19,7 @@ The dashboard explores:
 
 The interactive version is published on Tableau Public:
 
-[View the interactive dashboard]([ADD_TABLEAU_PUBLIC_URL_HERE](https://public.tableau.com/views/Onlineshoppers/Dashboard1))
+[View the interactive dashboard](https://public.tableau.com/views/Onlineshoppers/Dashboard1)
 
 ## File
 
