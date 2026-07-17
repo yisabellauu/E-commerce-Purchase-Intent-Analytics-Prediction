@@ -1,7 +1,7 @@
 # Tableau Dashboard
 
 This folder contains the packaged Tableau workbook for the e-commerce
-purchase-intent and conversion dashboard.
+conversion dashboard.
 
 The dashboard explores:
 
@@ -9,13 +9,18 @@ The dashboard explores:
 - Conversion rate by visitor type
 - Conversion rate by traffic source
 - Monthly conversion patterns
-- The relationship between page engagement and purchase conversion
+- The relationship between product-page engagement and purchase conversion
+
+## Dashboard Preview
+
+![E-commerce Conversion Dashboard](../images/dashboard_preview.png)
 
 ## Interactive Dashboard
 
-The interactive dashboard is published on Tableau Public. A direct link
-will be added here and in the main project README.
+The interactive version is published on Tableau Public:
 
-## Files
+[View the interactive dashboard]([ADD_TABLEAU_PUBLIC_URL_HERE](https://public.tableau.com/views/Onlineshoppers/Dashboard1))
+
+## File
 
 - `ecommerce_conversion_dashboard.twbx`: Packaged Tableau workbook
