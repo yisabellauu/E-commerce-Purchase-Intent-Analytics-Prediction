@@ -8,7 +8,6 @@ page activity, traffic sources, visitor types, and purchase outcomes.
 
 ## Data Files
 
-- `raw/`: Original source data.
 - `processed/`: Analysis-ready data used for Tableau and R.
 
 A detailed description of the variables is available in
