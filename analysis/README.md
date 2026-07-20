@@ -1,7 +1,6 @@
 # Exploratory Analysis and Predictive Modeling
 
-This folder contains the R analysis used to explore online shopping
-behavior and train models that predict purchase intent.
+This folder contains the R analysis used to explore online shopping behavior and train models that predict purchase intent.
 
 ## Analysis Components
 
@@ -21,10 +20,19 @@ The project compares multiple classification approaches, including:
 - Gradient Boosted Trees
 - Support Vector Machine
 
-Model performance is evaluated using appropriate classification metrics,
-with ROC-AUC used as the primary comparison metric.
+Model performance is evaluated using appropriate classification metrics, with ROC-AUC used as the primary comparison metric.
 
-## Planned Files
+## Files
 
-- `purchase_intent_modeling.qmd`: Reproducible analysis and modeling report
-- `purchase_intent_modeling.html`: Rendered report for convenient viewing
+- `purchase_intent_analysis.qmd`: Reproducible analysis and modeling report
+- `purchase_intent_analysis.html`: Rendered report for convenient viewing
+- Model Tuning:
+  `btmodel.R`
+  `lgmodel.R`
+  `rfmodel.R`
+  `svmmodel.R`
+- Model Results:
+  `btmodel_no_page_values.rda`
+  `lgmodel_no_page_values.rda`
+  `rfmodel_no_page_values.rda`
+  `svmmodel_no_page_values.rda`
