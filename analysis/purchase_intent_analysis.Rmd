@@ -1,0 +1,945 @@
+---
+title: "E-commerce Purchase Intent Analytics and Prediction"
+subtitle: "Exploratory Analysis and Predictive Modeling"
+author: "Isabella Cao"
+
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(glmnet)
+library(ranger)
+library(janitor)
+library(xgboost)
+library(kernlab)
+```
+# Introduction            
+
+
+The purpose of this project is to build a machine learning model to predict whether a user will make an online purchase based on their behavior on websites. We are interested in whether users’ purchasing decisions can be reflected through factors such as webpage browsing duration, page activity, visitor characteristics, and proximity to special shopping periods. The dataset was obtained from the UC Irvine Machine Learning Repository. For this classification problem, we will compare the performance of four different models to identify the best-performing model for predicting users’ purchasing behavior. Additionally, we aim to identify the predictors that contribute most strongly to model performance.               
+
+
+
+
+Our dataset consists of 12,330 browsing sessions and 18 variables. We selected Revenue as the outcome variable, which is a binary class consisting of TRUE and FALSE, representing whether a user actually purchased a product after browsing the website. Variables such as page type visited, time spent on pages, browsing quantity, and other clickstream behaviors are derived from the URL information of pages visited by users and metrics measured by Google Analytics for each page on the e-commerce website. A preliminary examination of the dataset suggests that only a small proportion of browsing sessions result in a purchase. Therefore, we evaluate whether the models can identify purchasing sessions despite substantial class imbalance.
+  
+  
+   
+
+
+## Load Data
+```{r}
+data <- read.csv("online_shoppers_intention.csv")
+data <- clean_names(data)
+```
+
+
+# Exploratory Data Analysis  
+
+
+## Converting Factors
+```{r}
+data <- data%>%
+  mutate(revenue = factor(revenue,levels = c("TRUE", "FALSE")),
+         month = as.factor(month),
+         weekend = as.factor(weekend),
+         visitor_type = as.factor(visitor_type),
+         operating_systems = as.factor(operating_systems),
+         browser = as.factor(browser),
+         region = as.factor(region),
+         traffic_type = as.factor(traffic_type)
+)
+```
+
+## Dataset Summary  
+ 
+```{r}
+dataset_summary <- tibble(
+  Measure = c(
+    "Browsing Sessions",
+    "Predictors",
+    "Outcome Variable",
+    "Conversion Rate",
+    "Missing Values"
+  ),
+  Value = c(
+    format(nrow(data), big.mark = ","),
+    ncol(data) - 1,
+    "Revenue",
+    scales::percent(
+      mean(data$revenue == "TRUE"),
+      accuracy = 0.1
+    ),
+    sum(is.na(data))
+  )
+)
+
+knitr::kable(
+  dataset_summary,
+  align = c("c", "c"),
+  caption = "Dataset Overview"
+)
+```
+
+This dataset consists of 10 numerical and 8 categorical attributes. First, we checked the variable types and converted several character and numeric variables into factors where necessary. It is worth noting that our outcome variable, Revenue, by default places FALSE before TRUE due to alphabetical order. Since our goal is to predict whether users make a purchase, we reset the factor levels and placed TRUE first to facilitate later analysis.
+
+Next, we checked for missing data. Fortunately, there are no missing values in this dataset. 
+
+
+
+
+
+## Visualization 
+```{r}
+data %>%
+  ggplot(aes(x = revenue)) +
+  geom_bar() +
+  geom_text(
+    stat = "count", 
+    aes(label = after_stat(paste0(round(count / sum(count) * 100, 1), "%")))
+  ) +
+  labs(x = "Revenue", y = "Count", title = "Distribution of Purchase Outcome")
+```
+
+
+We explored the class distribution using a bar chart. The chart clearly shows the proportion of users who actually made a purchase after visiting the website. Only 15.5% of browsing sessions resulted in a purchase, while the majority did not convert, indicating substantial class imbalance.   
+
+
+We were interested in whether sessions that resulted in a purchase spent more time browsing product-related pages than those who did not. Therefore, we used boxplots to compare the median, variance, and outliers between the two groups.
+```{r}
+data %>% 
+  ggplot(aes(x = revenue, y = log1p(product_related_duration))) +
+  geom_boxplot() +
+  labs(
+    title = "Box Plot of Product Related Duration vs. Revenue with Log Transformation",
+    y = "Log-transformed product-related duration", 
+    x = "Revenue") +
+  theme_minimal() 
+```
+
+Since the original duration data was highly skewed, we applied a log transformation to ProductRelated_Duration. The boxplot shows that purchasing sessions had a higher median log-transformed product-related duration than non-purchasing sessions. This suggests that users who purchased products generally spent more time browsing product-related pages. However, the presence of outliers and the relatively larger variance in the Revenue = FALSE group indicate that some users spent a long time browsing product-related pages without making a purchase, while others spent very little time.  
+
+
+
+Finally, we wanted to explore relationships among variables and determine whether these relationships were positive or negative. To simplify the calculation of correlation coefficients, we focused only on numerical variables.
+```{r}
+correlation_matrix <- data %>%
+  select(where(is.numeric)) %>%
+  cor()
+
+corrplot(
+  correlation_matrix,
+  tl.srt = 45,
+  diag = FALSE
+) 
+```
+      
+
+
+There is a strong positive correlation between ProductRelated and ProductRelated_Duration, which is not surprising because these variables measure similar behaviors, namely page counts and browsing duration. There is also a strong positive correlation between ExitRates and BounceRates, as both are related website engagement metrics. Interestingly, the predictor SpecialDay shows only weak correlations with the other predictors.   
+
+## Data Split  
+
+Before building our models, we split the data into training and testing sets. Since we previously identified class imbalance in the dataset, we used stratified sampling to ensure that both the training and testing datasets preserved the original class proportions. This helps reduce bias and variability in model performance.
+
+```{r}
+set.seed(2026)
+data_split <- initial_split(data, prop = 0.75, 
+                              strata = revenue)
+
+data_train <- training(data_split)
+data_test <- testing(data_split)
+```
+
+
+   
+Verify the proportions   
+```{r}
+tibble(
+  Dataset = c("Training Set", "Test Set"),
+  Sessions = c(nrow(data_train), nrow(data_test)),
+  Proportion = c(
+    nrow(data_train) / nrow(data),
+    nrow(data_test) / nrow(data)
+  )
+) %>%
+  mutate(
+    Proportion = scales::percent(Proportion, accuracy = 0.1)
+  ) %>%
+  knitr::kable(
+    align = c("c", "c", "c"),
+    caption = "Training and Test Set Distribution"
+  )
+```
+After verification, the training set consisted of approximately 75 percent of the data, while the testing set contained the remaining 25 percent, which aligned with our original goal. 
+
+
+# Building Recipe
+```{r}
+data_recipe <- recipe(revenue ~ ., data = data_train) %>%
+  step_rm(page_values) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+```
+Next, we built a recipe for further model analysis. Categorical features were converted into dummy variables. Since Logistic Regression and Support Vector Machine models are sensitive to feature scales, we centered and scaled the predictors. Additionally, we removed zero-variance predictors because they provide no useful information and may cause computational issues. 
+
+PageValues was also excluded from predictive modeling because its availability before conversion is uncertain and it may contain information closely associated with completed transactions. Removing it reduces potential data leakage and produces a more realistic estimate of pre-purchase model performance.
+
+
+# V-Fold Cross Validation   
+
+We also applied stratified sampling during v-fold cross-validation so that each fold maintained representative proportions of the outcome classes. Stratification ensured that each fold maintained a similar purchase rate, reducing instability in performance estimates caused by uneven class distributions. Cross-validation helps us evaluate the generalizability of our models.
+
+```{r}
+data_folds <- vfold_cv(data_train, v = 5, strata = revenue)
+
+```
+
+# Building Models    
+
+Since our research question is a classification problem, we selected four suitable models for comparison.
+                                 
+
+## Logistic Regression (with Elastic Net)                   
+
+First, we chose a Logistic Regression model with Elastic Net regularization. Because our dataset contains several highly correlated variables, Elastic Net helps reduce multicollinearity while selecting important features and handling correlated predictors effectively.
+
+```{r,eval=FALSE}
+elastic_model <- logistic_reg(
+  penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+elastic_wf <- workflow() %>%
+  add_recipe(data_recipe) %>%
+  add_model(elastic_model)
+```
+set up our models and workflows
+
+```{r,eval=FALSE}
+en_grid <- grid_regular(penalty(), mixture(range = c(0, 1)), levels = 10)
+en_grid
+```
+
+```{r,eval=FALSE}
+els_tune <- tune_grid(
+  elastic_wf,
+  resamples = data_folds, 
+  grid = en_grid
+)
+```
+created tuning grids           
+
+
+## Random Forest            
+                                           
+
+Second, we selected a Random Forest model because clickstream data may contain nonlinear patterns. Random Forest performs well in capturing nonlinear relationships and can handle outliers, such as the extreme browsing duration we identified earlier. 
+
+```{r,eval=FALSE}
+rf_model <- rand_forest(mtry = tune(), 
+                           trees = 500, 
+                           min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+
+rf_wf <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(data_recipe)
+```
+We set up our models and workflows.
+
+
+```{r,eval=FALSE}
+rf_grid <- grid_regular(
+  mtry(range = c(2, 20)), 
+  min_n(range = c(5, 30)),
+  levels = 5  
+)
+```
+
+```{r,eval=FALSE}
+tune_class <- tune_grid(
+  rf_wf,
+  resamples = data_folds,
+  grid = rf_grid
+)
+```
+We created tuning grids to define the ranges for relevant hyperparameters. 
+
+
+## Gradient-Boosted Trees             
+                  
+                  
+Third, we selected Gradient-Boosted Trees because they can capture complex
+nonlinear relationships and interactions among browsing-behavior variables. By learning from previous prediction mistakes, boosted trees often achieve high predictive accuracy.
+
+```{r}
+bt_class_spec <- boost_tree(mtry = tune(), 
+                           trees = tune(), 
+                           learn_rate = tune()) %>%
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+bt_class_wf <- workflow() %>% 
+  add_model(bt_class_spec) %>% 
+  add_recipe(data_recipe)
+```
+set up our models and workflows
+
+
+```{r,eval=FALSE}
+bt_grid <- grid_regular(
+  mtry(range = c(2, 20)),           
+  trees(range = c(100, 500)), 
+  learn_rate(range = c(-3, -1)),     
+  levels = 4                      
+)
+```
+
+```{r,eval=FALSE}
+tune_bt_class <- tune_grid(
+  bt_class_wf,
+  resamples = data_folds,
+  grid = bt_grid
+)
+```
+created tuning grids        
+
+
+
+## Support Vector Machines                 
+
+
+Finally, we selected a Support Vector Machine model because our dataset contains many variables. SVM performs well in high-dimensional settings and is effective at finding an optimal decision boundary for classification.
+
+
+
+SVM with a radial kernel
+```{r,eval=FALSE}
+svm_rbf_spec <- svm_rbf(
+  cost = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svm_rbf_wkflow <- workflow() %>% 
+  add_recipe(data_recipe) %>% 
+  add_model(svm_rbf_spec)
+```
+set up our models and workflows
+
+```{r,eval=FALSE}
+svm_grid <- grid_regular(cost(), levels = 5)
+
+svm_tune <- tune_grid(
+  svm_rbf_wkflow, 
+  resamples = data_folds,       
+  grid = svm_grid
+)
+```
+created tuning grids        
+
+
+
+# Model Results           
+
+Load result
+```{r}
+load("lgmodel_no_page_values.rda")
+load("rfmodel_no_page_values.rda")
+load("btmodel_no_page_values.rda")
+load("svmmodel_no_page_values.rda")
+```
+To reduce rerunning time, we saved the tuning process in a separate R script.
+                   
+                   
+                   
+## Logistic regression model with elastic net 
+
+```{r elastic-net-results}
+best_els <- select_best(
+  els_tune,
+  metric = "roc_auc"
+)
+
+show_best(
+  els_tune,
+  metric = "roc_auc",
+  n = 5
+) %>%
+  transmute(
+    `Penalty` = round(penalty, 4),
+    `Mixture` = round(mixture, 3),
+    `Mean ROC-AUC` = round(mean, 3),
+    `Standard Error` = round(std_err, 4)
+  ) %>%
+  knitr::kable(
+        align = c("c", "c", "c", "c"),
+    caption = "Top Five Elastic Net Tuning Configurations"
+  )
+```
+For the Elastic Net model, the best configuration used a penalty of approximately 0.006 and a mixture = 0.333. It  achieved a mean cross-validated ROC-AUC value of 0.745 with standard error of 0.0076.
+
+
+
+
+
+## Random forest
+```{r}
+autoplot(tune_class) + theme_minimal()
+```
+
+
+The plot showed that model performance improved as the number of randomly selected predictors increased, but gains plateaued after approximately 6 predictors.  
+
+
+```{r random-forest-results}
+best_rf_class <- select_best(
+  tune_class,
+  metric = "roc_auc"
+)
+
+show_best(
+  tune_class,
+  metric = "roc_auc",
+  n = 5
+) %>%
+  transmute(
+    `Predictors per Split (mtry)` = mtry,
+    `Minimum Node Size (min_n)`= min_n,
+    `Mean ROC-AUC` = round(mean, 3),
+    `Standard Error` = round(std_err, 4)
+  ) %>%
+  knitr::kable(
+        align = c("c", "c", "c", "c"),
+    caption = "Top Five Random Forest Tuning Configurations"
+  )
+```
+The best Random Forest configuration used six predictors per split and a minimum node size of 23. It achieved a mean cross-validated ROC-AUC of 0.776 with a standard error of 0.0089.
+
+
+
+
+## Gradient-Boosted Trees
+```{r}
+autoplot(tune_bt_class) + theme_minimal()
+```
+
+
+At lower learning rates, ROC AUC increased as the number of randomly selected predictors increased. In contrast, at a  learning rate (0.0215), ROC AUC exhibited minimal change after approximately 14 predictors, suggesting diminishing performance. Accuracy generally improved with increases in both learning rate and the number of predictors, though gains plateaued at higher values, indicating that moderate learning rates may provide a better balance between learning efficiency and predictive performance.    
+
+
+```{r}
+best_bt_class <- select_best(tune_bt_class, metric = "roc_auc")
+show_best(
+  tune_bt_class,
+  metric = "roc_auc",
+  n = 5
+) %>%
+  transmute(
+    `Predictors per Split (mtry)` = mtry,
+    `Number of Trees` = trees,
+    `Learning Rate` = round(learn_rate, 4),
+    `Mean ROC-AUC` = round(mean, 3),
+    `Standard Error` = round(std_err, 4)
+  ) %>%
+  knitr::kable(
+    align = c("c", "c", "c", "c","c"),
+    caption = "Top Five Gradient-Boosted Trees Tuning Configurations"
+  )
+```
+
+
+The selected Gradient-Boosted Trees configuration used 14 predictors per split, 233 trees, and a learning rate of 0.0215. It achieved the highest mean cross-validated ROC-AUC of 0.783 with a standard error of 0.0078.
+
+
+
+## Support Vector Machines
+```{r}
+svm_tune %>% autoplot()
+```
+
+
+Cross-validation results showed that SVM performance was sensitive to the cost parameter. The best configuration used a cost of 2.3784 and achieved a mean ROC-AUC of 0.665. Performance declined at larger cost values, suggesting that stronger penalties produced a more flexible decision boundary than needed for this dataset.
+
+```{r}
+svm_best_radial <- select_best(
+  svm_tune,
+  metric = "roc_auc"
+)
+
+show_best(
+  svm_tune,
+  metric = "roc_auc",
+  n = 5
+) %>%
+  transmute(
+    `cost` = round(cost, 4),
+    `Mean ROC-AUC` = round(mean, 3),
+    `Standard Error` = round(std_err, 4)
+  ) %>%
+  knitr::kable(
+    align = c("c", "c", "c"),
+    caption = "Top Five Support Vector Machine Tuning Configurations"
+  )
+```
+
+
+
+
+## ROC AUC Comparison          
+
+
+ROC-AUC evaluates the model’s ability to rank purchasing sessions above non-purchasing sessions across classification thresholds. To determine the best-performing model, we compared their ROC-AUC values, where a higher ROC-AUC indicates better classification performance.
+
+```{r}
+get_best_roc <- function(tuning_result) {
+  show_best(
+    tuning_result,
+    metric = "roc_auc",
+    n = 1
+  ) %>%
+    select(mean, std_err)
+}
+```
+
+```{r}
+roc_metrics <- bind_rows(
+  "Elastic Net" = get_best_roc(els_tune),
+  "Random Forest" = get_best_roc(tune_class),
+  "Gradient-Boosted Trees" = get_best_roc(tune_bt_class),
+  "Support Vector Machine" = get_best_roc(svm_tune),
+  .id = "Model"
+)
+
+roc_metrics %>%
+  transmute(
+    Model,
+    `Mean ROC-AUC` = round(mean, 3),
+    `Standard Error` = round(std_err, 4)
+  ) %>%
+  arrange(desc(`Mean ROC-AUC`)) %>%
+  knitr::kable(
+    align = c("c", "c", "c"),
+    caption = "Cross-Validated ROC-AUC Comparison"
+  )
+```
+
+```{r}
+roc_metrics %>%
+  ggplot(aes(
+    x = reorder(Model, mean),
+    y = mean
+  )) +
+  geom_col(fill = "#3B82A0", width = 0.5) +
+  geom_errorbar(
+    aes(
+      ymin = mean - std_err,
+      ymax = mean + std_err
+    ),
+    width = 0.15
+  ) +
+  geom_text(
+    aes(label = round(mean, 3)),
+    hjust = -0.2
+  ) +
+  coord_flip() +
+  labs(
+    title = "Cross-Validated ROC-AUC Comparison",
+    x = NULL,
+    y = "Mean ROC-AUC"
+  ) +
+  ylim(0.5, 1) +
+  theme_minimal() 
+```
+
+
+Gradient-Boosted Trees achieved the highest mean cross-validated ROC-AUC. However, Random Forest produced a closely comparable result, with a difference of only 0.007 in mean ROC-AUC. In contrast, the Support Vector Machine model had the lowest ROC-AUC value among the four models.        
+
+
+# Final Model Evaluation
+
+## Selected Model
+
+Gradient-Boosted Trees achieved the highest mean cross-validated ROC-AUC among the four candidate models. The selected configuration is shown below.
+
+```{r selected-model}
+show_best(
+  tune_bt_class,
+  metric = "roc_auc",
+  n = 1
+) %>%
+  transmute(
+    `Predictors per Split (mtry)` = mtry,
+    `Number of Trees` = trees,
+    `Learning Rate` = round(learn_rate, 4),
+    `Mean ROC-AUC` = round(mean, 3),
+    `Standard Error` = round(std_err, 4)
+  ) %>%
+  knitr::kable(
+    align = c("c", "c", "c", "c", "c"),
+    caption = "Selected Gradient-Boosted Trees Configuration"
+  )
+```
+
+The selected hyperparameters were used to finalize the Gradient-Boosted
+Trees workflow. Classification threshold selection was conducted using
+cross-validated predictions from the training data, without using the
+held-out test set.
+
+```{r finalize-workflow}
+final_bt_wf <- finalize_workflow(
+  bt_class_wf,
+  best_bt_class
+)
+```
+
+## Classification Threshold Selection
+
+The default classification threshold of 0.50 produced very low recall.
+Therefore, we evaluated alternative thresholds using out-of-fold
+predictions from the training data. The threshold that maximized the F1
+score was selected to balance precision and recall.
+
+```{r threshold-resamples}
+set.seed(2026)
+
+bt_threshold_resamples <- fit_resamples(
+  final_bt_wf,
+  resamples = data_folds,
+  metrics = metric_set(
+    roc_auc,
+    pr_auc
+  ),
+  control = control_resamples(
+    save_pred = TRUE
+  )
+)
+
+cv_predictions <- collect_predictions(
+  bt_threshold_resamples
+)
+```
+
+```{r calculate-threshold-metrics}
+threshold_values <- seq(
+  from = 0.05,
+  to = 0.50,
+  by = 0.01
+)
+
+threshold_metrics <- purrr::map_dfr(
+  threshold_values,
+  function(current_threshold) {
+
+    threshold_predictions <- cv_predictions %>%
+      mutate(
+        predicted_class = factor(
+          if_else(
+            .pred_TRUE >= current_threshold,
+            "TRUE",
+            "FALSE"
+          ),
+          levels = c("TRUE", "FALSE")
+        )
+      )
+
+    tibble(
+      threshold = current_threshold,
+
+      precision = precision_vec(
+        truth = threshold_predictions$revenue,
+        estimate = threshold_predictions$predicted_class,
+        event_level = "first"
+      ),
+
+      recall = recall_vec(
+        truth = threshold_predictions$revenue,
+        estimate = threshold_predictions$predicted_class,
+        event_level = "first"
+      ),
+
+      f1 = f_meas_vec(
+        truth = threshold_predictions$revenue,
+        estimate = threshold_predictions$predicted_class,
+        event_level = "first"
+      ),
+
+      balanced_accuracy = bal_accuracy_vec(
+        truth = threshold_predictions$revenue,
+        estimate = threshold_predictions$predicted_class,
+        event_level = "first"
+      )
+    )
+  }
+)
+```
+
+```{r selected-threshold}
+best_threshold_result <- threshold_metrics %>%
+  slice_max(
+    order_by = f1,
+    n = 1,
+    with_ties = FALSE
+  )
+
+best_threshold <- best_threshold_result %>%
+  pull(threshold)
+
+best_threshold_result %>%
+  mutate(
+    across(
+      c(
+        precision,
+        recall,
+        f1,
+        balanced_accuracy
+      ),
+      ~ scales::percent(.x, accuracy = 0.1)
+    )
+  ) %>%
+  rename(
+    Threshold = threshold,
+    Precision = precision,
+    Recall = recall,
+    `F1 Score` = f1,
+    `Balanced Accuracy` = balanced_accuracy
+  ) %>%
+  knitr::kable(
+    align = c("c", "c", "c", "c", "c"),
+    caption = "Selected Threshold Based on Cross-Validated F1 Score"
+  )
+```
+
+```{r threshold-plot, fig.width=8, fig.height=6}
+threshold_metrics %>%
+  select(
+    threshold,
+    precision,
+    recall,
+    f1
+  ) %>%
+  pivot_longer(
+    cols = -threshold,
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  ggplot(
+    aes(
+      x = threshold,
+      y = value,
+      color = metric
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    xintercept = best_threshold,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Classification Performance by Threshold",
+    subtitle = "The dashed line indicates the threshold with the highest cross-validated F1 score",
+    x = "Purchase Probability Threshold",
+    y = "Metric Value",
+    color = "Metric"
+  ) +
+  theme_minimal()
+```
+
+## Final Model Training
+
+After threshold selection, the finalized workflow was fitted using all
+observations in the training set.
+
+```{r fit-final-model}
+final_bt_fit <- fit(
+  final_bt_wf,
+  data = data_train
+)
+```
+
+## Feature Importance
+
+```{r feature-importance, results='hide', fig.width=10, fig.height=6}
+xgb_engine <- final_bt_fit %>%
+  extract_fit_engine()
+
+importance_table <- xgboost::xgb.importance(
+  model = xgb_engine
+)
+
+xgboost::xgb.plot.importance(
+  importance_table,
+  top_n = 15,
+  measure = "Gain",
+  xlab = "Feature importance by gain"
+)
+```
+
+The feature-importance chart shows how the model distributed predictive importance among the remaining browsing and session characteristics after PageValues was removed. 
+
+## Held-Out Test Set Performance
+
+The threshold selected from cross-validated training predictions was then applied to the held-out test set.
+
+```{r test-set-predictions}
+final_bt_model_test <- augment(
+  final_bt_fit,
+  new_data = data_test
+) %>%
+  mutate(
+    .pred_class_adjusted = factor(
+      if_else(
+        .pred_TRUE >= best_threshold,
+        "TRUE",
+        "FALSE"
+      ),
+      levels = c("TRUE", "FALSE")
+    )
+  )
+```
+
+```{r final-test-metrics}
+final_metrics <- metric_set(
+  roc_auc,
+  pr_auc,
+  accuracy,
+  precision,
+  recall,
+  spec,
+  f_meas,
+  bal_accuracy
+)
+
+final_metric_results <- final_metrics(
+  final_bt_model_test,
+  truth = revenue,
+  estimate = .pred_class_adjusted,
+  .pred_TRUE
+)
+
+final_metric_results %>%
+  mutate(
+    .metric = recode(
+      .metric,
+      roc_auc = "ROC-AUC",
+      pr_auc = "PR-AUC",
+      accuracy = "Accuracy",
+      precision = "Precision",
+      recall = "Recall",
+      spec = "Specificity",
+      f_meas = "F1 Score",
+      bal_accuracy = "Balanced Accuracy"
+    ),
+    .estimate = scales::percent(
+      .estimate,
+      accuracy = 0.1
+    )
+  ) %>%
+  select(
+    Metric = .metric,
+    Estimate = .estimate
+  ) %>%
+  knitr::kable(
+    align = c("c", "c"),
+    caption = "Final Gradient-Boosted Trees Performance on the Held-Out Test Set"
+  )
+```
+
+```{r metric-helper, include=FALSE}
+get_final_metric <- function(metric_name) {
+  final_metric_results %>%
+    filter(.metric == metric_name) %>%
+    pull(.estimate)
+}
+```
+
+On the held-out test set, the final Gradient-Boosted Trees model achieved
+a ROC-AUC of
+`r scales::percent(get_final_metric("roc_auc"), accuracy = 0.1)`
+and a PR-AUC of
+`r scales::percent(get_final_metric("pr_auc"), accuracy = 0.1)`.
+
+Using the classification threshold of
+`r round(best_threshold, 2)`, selected exclusively from cross-validated
+training predictions, the model achieved
+`r scales::percent(get_final_metric("precision"), accuracy = 0.1)`
+precision and
+`r scales::percent(get_final_metric("recall"), accuracy = 0.1)`
+recall. Its F1 score was
+`r scales::percent(get_final_metric("f_meas"), accuracy = 0.1)`,
+with a balanced accuracy of
+`r scales::percent(get_final_metric("bal_accuracy"), accuracy = 0.1)`.
+
+## ROC Curve
+
+```{r final-roc-curve, fig.width=8, fig.height=6}
+roc_curve(
+  final_bt_model_test,
+  truth = revenue,
+  .pred_TRUE
+) %>%
+  autoplot() +
+  labs(
+    title = "ROC Curve for the Final Gradient-Boosted Trees Model",
+    subtitle = "Performance on the held-out test set",
+    x = "1 − Specificity",
+    y = "Sensitivity"
+  ) +
+  theme_minimal()
+```
+
+## Confusion Matrix
+
+```{r final-confusion-matrix, fig.width=7, fig.height=6}
+conf_mat(
+  final_bt_model_test,
+  truth = revenue,
+  estimate = .pred_class_adjusted
+) %>%
+  autoplot(type = "heatmap") +
+  labs(
+    title = "Final Confusion Matrix for the Test Set",
+    subtitle = paste(
+      "Classification threshold:",
+      round(best_threshold, 2)
+    )
+  )
+```
+
+The confusion matrix shows the final classification results after applying the threshold selected from cross-validated training predictions.
+
+The confusion matrix reinforces the metric results: the model correctly classified a larger proportion of non-purchasing sessions than purchasing sessions, consistent with its
+`r scales::percent(get_final_metric("spec"), accuracy = 0.1)`
+specificity and 
+`r scales::percent(get_final_metric("recall"), accuracy = 0.1)` recall.
+
+
+# Conclusion      
+
+In conclusion, the Gradient-Boosted Trees model achieved the strongest cross-validated ROC-AUC, suggesting that nonlinear relationships and interactions among browsing-behavior variables were important for purchase prediction.   
+
+Our findings also suggest that the model predicts non-purchasing behavior more accurately than purchasing behavior, likely because the dataset is highly imbalanced and most outcomes are non-purchases.      
+
+In addition, our prediction is based solely on users’ website browsing behavior, which provides a relatively narrow perspective. Other potentially influential factors, such as demographic information including age and gender, were not included in the dataset. Therefore, the generalizability of the identified important predictors may be limited. Another limitation is that some variables measure highly similar behaviors. For example, Informational and ProductRelated page counts may potentially be combined into a broader measure of total page browsing activity. 
+
+
+
+# Citation    
+
+Sakar, C. & Kastro, Y. (2018). Online Shoppers Purchasing Intention Dataset [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5F88Q.
