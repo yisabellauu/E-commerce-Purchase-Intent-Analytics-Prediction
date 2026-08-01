@@ -5,8 +5,8 @@ machine learning to analyze e-commerce conversion behavior and predict
 whether a browsing session will result in a purchase.
 
 ## Quick Links
-- **[Prediction Report](https://yisabellauu.github.io/E-commerce-Purchase-Intent-Analytics-Prediction/)
-- **[Interactive Tableau dashboard](https://public.tableau.com/views/Onlineshoppers/Dashboard1)
+- [Prediction Report](https://yisabellauu.github.io/E-commerce-Purchase-Intent-Analytics-Prediction/)
+- [Interactive Tableau dashboard](https://public.tableau.com/views/Onlineshoppers/Dashboard1)
 
 ## Project Overview
 
